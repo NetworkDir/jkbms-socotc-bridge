@@ -1,17 +1,17 @@
 // ============================================================================
-//  Super Soco TC RS485 protokolu  -  9600 8N1, master/slave
+//  Super Soco TC RS485 protocol  -  9600 8N1, master/slave
 //
-//  Kaynaklar: Ldsrc2008/SocoTC-BMS-cheater, stprograms/SuperSoco485Monitor
+//  Sources: Ldsrc2008/SocoTC-BMS-cheater, stprograms/SuperSoco485Monitor
 //
 //  Telegram:  T0 T1 DEST SRC LEN DATA[LEN] CHK 0D
-//    T0 T1 : C5 5C = istek (master'dan), B6 6B = cevap
-//    adres : AA = ECU (master), BA = gosterge, DA = motor surucu, 5A = batarya
-//    CHK   : LEN ^ DATA[0] ^ ... ^ DATA[LEN-1]
+//    T0 T1   : C5 5C = request (from the master), B6 6B = response
+//    address : AA = ECU (master), BA = dashboard, DA = motor controller, 5A = battery
+//    CHK     : LEN ^ DATA[0] ^ ... ^ DATA[LEN-1]
 //
-//  Batarya sorgusu : C5 5C 5A AA 01 97 96 0D
-//  Batarya cevabi  : B6 6B AA 5A 0A  V SOC T I CYC_H CYC_L DCYC_H DCYC_L ERR CHG  CHK 0D
+//  Battery poll   : C5 5C 5A AA 01 97 96 0D
+//  Battery answer : B6 6B AA 5A 0A  V SOC T I CYC_H CYC_L DCYC_H DCYC_L ERR CHG  CHK 0D
 //
-//  Bu dosya Arduino'ya bagimli degildir (PC'de test edilebilir).
+//  This file does not depend on Arduino (it can be tested on a PC).
 // ============================================================================
 #pragma once
 #include <stdint.h>
@@ -31,18 +31,18 @@ static const uint8_t MAX_PDU = 32;
 static const uint8_t BATTERY_PDU_LEN = 10;
 static const uint8_t BATTERY_FRAME_LEN = 5 + BATTERY_PDU_LEN + 2;   // 17
 
-// Hata bayti (byte 8) bitleri  -> gostergedeki hata kodu
+// Error byte (byte 8) bits  -> error code shown on the dashboard
 enum : uint8_t {
-  ERR_CHARGE_STOPPED   = 1 << 0,   // Err 92: BMS sarji kesti
-  ERR_CHARGE_OC        = 1 << 1,   // Err 93: sarj akimi cok yuksek
-  ERR_DISCHARGE_OC     = 1 << 2,   // Err 90: desarj akimi cok yuksek
+  ERR_CHARGE_STOPPED   = 1 << 0,   // Err 92: BMS stopped charging
+  ERR_CHARGE_OC        = 1 << 1,   // Err 93: charge current too high
+  ERR_DISCHARGE_OC     = 1 << 2,   // Err 90: discharge current too high
 };
 
 // Byte 9
 enum : uint8_t {
   ACT_IDLE        = 0,
   ACT_CHARGING    = 1,
-  ACT_DISCHARGING = 4,   // orijinal bataryada hic gozlenmemis, kullanmiyoruz
+  ACT_DISCHARGING = 4,   // never seen from the original battery, not used
 };
 
 struct Telegram {
@@ -54,10 +54,10 @@ struct BatteryStatus {
   uint8_t  voltage;          // V
   uint8_t  soc;              // %
   int8_t   temp;             // C
-  int8_t   current;          // A, + sarj / - desarj
-  uint16_t cycles;           // sarj dongusu
-  uint16_t dischargeCycles;  // desarj dongusu
-  uint8_t  error;            // ERR_ bitleri
+  int8_t   current;          // A, + charge / - discharge
+  uint16_t cycles;           // charge cycles
+  uint16_t dischargeCycles;  // discharge cycles
+  uint8_t  error;            // ERR_ bits
   uint8_t  activity;         // ACT_
 };
 
@@ -68,15 +68,16 @@ inline uint8_t xorChecksum(uint8_t len, const uint8_t *pdu) {
 }
 
 // ---------------------------------------------------------------------------
-//  Uzunluk tabanli telegram ayristirici. (Orijinal projedeki gibi 0x0D'yi
-//  bitis saymak, veri icinde 13 degeri gecince - orn. 13 C - bozulur.)
+//  Length-based telegram parser. (Treating 0x0D as the end of a telegram, as
+//  the original project does, breaks when the value 13 shows up in the data,
+//  e.g. 13 C.)
 // ---------------------------------------------------------------------------
 class Parser {
  public:
   void reset() { st_ = ST_T0; }
   bool busy() const { return st_ != ST_T0; }
 
-  // Gecerli bir telegram tamamlaninca true doner, telegram() ile al.
+  // Returns true when a valid telegram is complete; get it with telegram().
   bool feed(uint8_t b) {
     switch (st_) {
       case ST_T0:
@@ -132,7 +133,7 @@ inline bool isRequestFor(const Telegram &t, uint8_t dest) {
 }
 
 // ---------------------------------------------------------------------------
-//  Batarya cevabi olustur (17 bayt). dest = sorguyu gonderenin adresi (AA).
+//  Build the battery answer (17 bytes). dest = address of the poller (AA).
 // ---------------------------------------------------------------------------
 inline uint8_t buildBatteryResponse(const BatteryStatus &s, uint8_t dest, uint8_t *out) {
   out[0] = RES0;

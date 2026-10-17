@@ -1,42 +1,43 @@
 /*
   ============================================================================
-   SocoTC_Sniffer - Super Soco RS485 hat dinleyici / zamanlama olcer
-   Kart: Arduino Nano + MAX485
+   SocoTC_Sniffer - Super Soco RS485 bus listener / timing meter
+   Board: Arduino Nano + MAX485
   ============================================================================
 
-   Hattaki her telegrami zaman damgasi ve bir onceki telegramdan sonraki
-   BOSLUK suresiyle birlikte USB seri porta yazar. 5 saniyede bir ozet verir:
+   Prints every telegram on the bus to the USB serial port together with a
+   timestamp and the GAP since the previous telegram. Every 5 seconds it prints
+   a summary:
 
-     tur            : iki batarya sorgusu arasi sure (ECU'nun bir tam turu)
-     bat.cevap->    : batarya cevabindan sonra hattin bos kaldigi sure
-                      >>> JK'yi okumak icin kullanilabilecek pencere bu <<<
-     bat.cevapsiz   : batarya cevap vermezse ECU'nun ne kadar bekledigi
-     en uzun bosluk : herhangi iki telegram arasindaki en uzun sessizlik
+     cycle          : time between two battery polls (one full ECU cycle)
+     batt.ans->gap  : how long the bus stays idle after the battery answer
+                      >>> this is the window available for reading the JK <<<
+     batt.no-answer : how long the ECU waits when the battery does not answer
+     longest gap    : longest silence between any two telegrams
 
-   Baglanti (emulatorle ayni):
-     MAX485 RO -> D8, DI -> D9, DE+RE -> D2, A/B -> Soco RS485 A/B, GND ortak
+   Wiring (same as the emulator):
+     MAX485 RO -> D8, DI -> D9, DE+RE -> D2, A/B -> Soco RS485 A/B, common GND
 
-   Seri Monitor: 115200 baud
+   Serial Monitor: 115200 baud
 
-   ANSWER_BATTERY 1 iken batarya sorgusuna sabit degerlerle (72 V, %80) cevap
-   verir; boylece motosiklet normal calisir ve "bat.cevap->" olculebilir.
-   Hatta baska bir batarya veya emulator CEVAP VERIYORSA bunu 0 yap.
+   With ANSWER_BATTERY 1 it answers the battery poll with fixed values
+   (72 V, 80 %), so the bike runs normally and "batt.ans->gap" can be measured.
+   Set it to 0 if another battery or emulator on the bus IS ANSWERING.
 
-   Gereken kutuphane: AltSoftSerial (Paul Stoffregen)
+   Required library: AltSoftSerial (Paul Stoffregen)
 */
 
 #include <AltSoftSerial.h>
 
 // ============================================================================
-//  AYARLAR
+//  SETTINGS
 // ============================================================================
 #define PIN_RS485_DIR      2
 #define PIN_LED            13
 #define USB_BAUD           115200
-#define VERBOSE            1        // 1 = her telegrami yaz, 0 = sadece ozet
-#define SUMMARY_MS         5000UL   // ozet araligi
+#define VERBOSE            1        // 1 = print every telegram, 0 = summary only
+#define SUMMARY_MS         5000UL   // summary interval
 
-#define ANSWER_BATTERY     1        // 1 = batarya sorgusuna cevap ver
+#define ANSWER_BATTERY     1        // 1 = answer the battery poll
 #define ANS_VOLTAGE        72
 #define ANS_SOC            80
 #define ANS_TEMP           25
@@ -45,8 +46,8 @@
 // ============================================================================
 AltSoftSerial bus;   // RX = D8, TX = D9
 
-static const uint32_t BYTE_US       = 1042;   // 9600 baud'da 1 bayt
-static const uint32_t TG_TIMEOUT_US = 5000;   // telegram ortasinda bu kadar sessizlik -> eksik
+static const uint32_t BYTE_US       = 1042;   // 1 byte at 9600 baud
+static const uint32_t TG_TIMEOUT_US = 5000;   // this much silence mid-telegram -> incomplete
 
 enum Kind : uint8_t {
   K_NONE, K_SPEEDO_REQ, K_SPEEDO_RES, K_CTRL_REQ, K_CTRL_RES,
@@ -59,7 +60,7 @@ struct Stat {
   void add(uint32_t v) { if (v < mn) mn = v; if (v > mx) mx = v; sum += v; n++; }
 };
 
-// alici
+// receiver
 static uint8_t  tg[40];
 static uint8_t  tgN = 0, tgExpected = 0;
 static uint32_t tgStartUs = 0, tgStartMs = 0;
@@ -68,7 +69,7 @@ static uint8_t  junkN = 0;
 static uint32_t junkStartMs = 0;
 static uint32_t lastByteUs = 0;
 
-// zamanlama
+// timing
 static uint32_t lastBusEndUs = 0;
 static bool     haveBusEnd   = false;
 static Kind     prevKind     = K_NONE;
@@ -79,7 +80,7 @@ static Stat stCycle, stAfterBattRes, stBattNoAnswer, stGap;
 static uint32_t cntOk = 0, cntBadChk = 0, cntIncomplete = 0, cntJunk = 0;
 static uint32_t lastSummaryMs = 0;
 
-// cevap
+// answer
 static uint8_t  txBuf[17];
 static bool     respPending = false;
 static uint32_t respAtUs    = 0;
@@ -88,9 +89,9 @@ static bool     txActive    = false;
 static uint32_t txEndUs     = 0;
 
 // ============================================================================
-//  Yazdirma yardimcilari
+//  Print helpers
 // ============================================================================
-static void printMs1(uint32_t us) {          // mikrosaniyeyi "12.3" ms olarak yaz
+static void printMs1(uint32_t us) {          // print microseconds as "12.3" ms
   Serial.print(us / 1000);
   Serial.print('.');
   Serial.print((us / 100) % 10);
@@ -127,21 +128,21 @@ static Kind kindOf(const uint8_t *b, uint8_t n) {
 
 static const __FlashStringHelper *kindName(Kind k) {
   switch (k) {
-    case K_SPEEDO_REQ: return F("ECU->Gosterge  sorgu");
-    case K_SPEEDO_RES: return F("Gosterge->ECU  cevap");
-    case K_CTRL_REQ:   return F("ECU->Kontrolcu sorgu");
-    case K_CTRL_RES:   return F("Kontrolcu->ECU cevap");
-    case K_BATT_REQ:   return F("ECU->Batarya   sorgu");
-    case K_BATT_RES:   return F("Batarya->ECU   cevap");
-    case K_OURS:       return F("BIZ->ECU  batarya cvp");
-    default:           return F("Bilinmeyen          ");
+    case K_SPEEDO_REQ: return F("ECU->Dashboard  poll");
+    case K_SPEEDO_RES: return F("Dashboard->ECU  resp");
+    case K_CTRL_REQ:   return F("ECU->Controller poll");
+    case K_CTRL_RES:   return F("Controller->ECU resp");
+    case K_BATT_REQ:   return F("ECU->Battery    poll");
+    case K_BATT_RES:   return F("Battery->ECU    resp");
+    case K_OURS:       return F("OURS->ECU  batt resp");
+    default:           return F("Unknown             ");
   }
 }
 
 // ============================================================================
-//  Olay isleme
+//  Event handling
 // ============================================================================
-// status: 0 = tamam, 1 = checksum hatasi, 2 = eksik
+// status: 0 = ok, 1 = checksum error, 2 = incomplete
 static void onTelegram(Kind k, uint32_t startUs, uint32_t endUs, uint32_t startMs,
                        const uint8_t *b, uint8_t n, uint8_t status) {
   uint32_t gap = 0;
@@ -170,12 +171,12 @@ static void onTelegram(Kind k, uint32_t startUs, uint32_t endUs, uint32_t startM
   Serial.print(kindName(k));
   Serial.print(F("  "));
   printHex(b, n);
-  if (status == 1) Serial.print(F(" <CHECKSUM HATASI>"));
-  if (status == 2) Serial.print(F(" <EKSIK>"));
+  if (status == 1) Serial.print(F(" <CHECKSUM ERROR>"));
+  if (status == 2) Serial.print(F(" <INCOMPLETE>"));
   if ((k == K_BATT_RES || k == K_OURS) && status == 0 && n >= 15) {
     Serial.print(F(" -> "));
-    Serial.print(b[5]);  Serial.print(F("V %"));
-    Serial.print(b[6]);  Serial.print(' ');
+    Serial.print(b[5]);  Serial.print(F("V "));
+    Serial.print(b[6]);  Serial.print(F("% "));
     Serial.print((int8_t)b[7]); Serial.print('C');
   }
   Serial.println();
@@ -192,9 +193,9 @@ static void flushJunk() {
   cntJunk += junkN;
 #if VERBOSE
   Serial.print(junkStartMs);
-  Serial.print(F(" ms  ?? cop veri ("));
+  Serial.print(F(" ms  ?? junk ("));
   Serial.print(junkN);
-  Serial.print(F(" bayt): "));
+  Serial.print(F(" bytes): "));
   printHex(junk, junkN);
   Serial.println();
 #endif
@@ -207,7 +208,7 @@ static void addJunk(uint8_t b) {
   else { flushJunk(); junkStartMs = millis(); junk[junkN++] = b; }
 }
 
-static uint8_t xorChecksum(const uint8_t *b, uint8_t n) {   // b[4] = len, b[5..] = veri
+static uint8_t xorChecksum(const uint8_t *b, uint8_t n) {   // b[4] = len, b[5..] = data
   uint8_t c = b[4];
   for (uint8_t i = 0; i < b[4]; i++) c ^= b[5 + i];
   (void)n;
@@ -250,7 +251,7 @@ static void onByte(uint8_t b, uint32_t t) {
     if (b == 0xC5 || b == 0xB6) {
       flushJunk();
       tg[tgN++] = b;
-      tgStartUs = t - BYTE_US;           // baytin baslangic ani (okundugunda bitmis olur)
+      tgStartUs = t - BYTE_US;           // start of the byte (it is complete when read)
       tgStartMs = millis();
     } else {
       addJunk(b);
@@ -264,14 +265,14 @@ static void onByte(uint8_t b, uint32_t t) {
     } else {
       addJunk(tg[0]);
       tgN = 0;
-      onByte(b, t);                      // bu bayt yeni bir baslangic olabilir
+      onByte(b, t);                      // this byte may start a new telegram
     }
     return;
   }
 
   tg[tgN++] = b;
   if (tgN == 5) {
-    if (b > 32) {                        // gecersiz uzunluk -> cop
+    if (b > 32) {                        // invalid length -> junk
       for (uint8_t i = 0; i < tgN; i++) addJunk(tg[i]);
       tgN = 0;
       return;
@@ -300,16 +301,16 @@ static void serviceTx() {
 }
 
 static void printSummary() {
-  Serial.print(F("=== OZET  tur="));          printStat(stCycle);
-  Serial.print(F(" ms | bat.cevap->bosluk=")); printStat(stAfterBattRes);
-  Serial.print(F(" ms | bat.cevapsiz bekleme=")); printStat(stBattNoAnswer);
-  Serial.print(F(" ms | en uzun bosluk="));
+  Serial.print(F("=== SUMMARY  cycle="));         printStat(stCycle);
+  Serial.print(F(" ms | batt.ans->gap="));        printStat(stAfterBattRes);
+  Serial.print(F(" ms | batt.no-answer wait="));  printStat(stBattNoAnswer);
+  Serial.print(F(" ms | longest gap="));
   if (stGap.n) printMs1(stGap.mx); else Serial.print('-');
-  Serial.print(F(" ms | tg ok="));  Serial.print(cntOk);
-  Serial.print(F(" chk="));         Serial.print(cntBadChk);
-  Serial.print(F(" eksik="));       Serial.print(cntIncomplete);
-  Serial.print(F(" cop="));         Serial.print(cntJunk);
-  Serial.println(F(" bayt  (min/ort/max)"));
+  Serial.print(F(" ms | tg ok="));    Serial.print(cntOk);
+  Serial.print(F(" chk="));           Serial.print(cntBadChk);
+  Serial.print(F(" incomplete="));    Serial.print(cntIncomplete);
+  Serial.print(F(" junk="));          Serial.print(cntJunk);
+  Serial.println(F(" bytes  (min/avg/max)"));
 
   stCycle.reset(); stAfterBattRes.reset(); stBattNoAnswer.reset(); stGap.reset();
   cntOk = cntBadChk = cntIncomplete = cntJunk = 0;
@@ -317,16 +318,16 @@ static void printSummary() {
 
 void setup() {
   pinMode(PIN_RS485_DIR, OUTPUT);
-  digitalWrite(PIN_RS485_DIR, LOW);      // dinle
+  digitalWrite(PIN_RS485_DIR, LOW);      // listen
   pinMode(PIN_LED, OUTPUT);
   Serial.begin(USB_BAUD);
   bus.begin(9600);
   pinMode(8, INPUT_PULLUP);
   stCycle.reset(); stAfterBattRes.reset(); stBattNoAnswer.reset(); stGap.reset();
 
-  Serial.println(F("SocoTC_Sniffer basladi. Sutunlar: zaman  +bosluk  tip  baytlar"));
+  Serial.println(F("SocoTC_Sniffer started. Columns: time  +gap  type  bytes"));
 #if ANSWER_BATTERY
-  Serial.println(F("Batarya sorgularina 72V/%80 ile cevap veriliyor (ANSWER_BATTERY 1)."));
+  Serial.println(F("Answering battery polls with 72V / 80% (ANSWER_BATTERY 1)."));
 #endif
 }
 

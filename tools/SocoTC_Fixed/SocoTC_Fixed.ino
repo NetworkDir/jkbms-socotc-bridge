@@ -1,43 +1,43 @@
 /*
-  SocoTC_Sabit - Super Soco TC batarya emulatoru, SABIT degerler
-  Kart: Arduino Nano + MAX485
+  SocoTC_Fixed - Super Soco TC battery emulator with FIXED values
+  Board: Arduino Nano + MAX485
 
-  ECU'nun batarya sorgusuna (C5 5C 5A AA ...) her zaman:
-     83 V, %100, 25 C, 0 A, hata yok   ile cevap verir.
+  Always answers the ECU's battery poll (C5 5C 5A AA ...) with:
+     83 V, 100 %, 25 C, 0 A, no errors.
 
-  Baglanti (sniffer ile AYNI, calistigi kanitlanmis):
+  Wiring (SAME as the sniffer, known to work):
     MAX485 RO      -> D8
     MAX485 DI      -> D9
-    MAX485 DE + RE -> D2   (iki pini kopru yap)
+    MAX485 DE + RE -> D2   (bridge the two pins)
     MAX485 VCC/GND -> Nano 5V / GND
-    MAX485 A / B   -> Soco RS485 A / B  (sniffer'da calisan yon)
-    D0 / D1 BOS kalir -> kod yuklerken kablo cikarmak gerekmez.
+    MAX485 A / B   -> Soco RS485 A / B  (the polarity that works with the sniffer)
+    D0 / D1 stay FREE -> no need to unplug anything when uploading.
 
-  Gereken kutuphane: AltSoftSerial (Paul Stoffregen)
+  Required library: AltSoftSerial (Paul Stoffregen)
 
-  Seri Monitor (115200): saniyede bir "ECU sorgu / cevap" sayilari yazar.
-  LED (D13): her cevapta yanip soner.
+  Serial Monitor (115200): prints "ECU poll / answer" counters once per second.
+  LED (D13): blinks on every answer.
 */
 
 #include <AltSoftSerial.h>
 
-// ------------------------- AYARLAR -------------------------
-#define VOLTAGE_V     83     // gonderilen gerilim (V)
-#define SOC_PERCENT   100    // gonderilen SOC (%)
-#define TEMP_C        25     // gonderilen sicaklik (C)
-#define CURRENT_A     0      // gonderilen akim (A)
-#define CYCLES        0      // sarj dongusu
+// ------------------------- SETTINGS -------------------------
+#define VOLTAGE_V     83     // voltage sent (V)
+#define SOC_PERCENT   100    // SOC sent (%)
+#define TEMP_C        25     // temperature sent (C)
+#define CURRENT_A     0      // current sent (A)
+#define CYCLES        0      // charge cycles
 
 #define PIN_DIR       2      // MAX485 DE + RE
 #define PIN_LED       13
-#define RESPONSE_DELAY_US 1000UL   // sorgudan sonra cevap oncesi bekleme
-// -----------------------------------------------------------
+#define RESPONSE_DELAY_US 1000UL   // delay between the poll and the answer
+// ------------------------------------------------------------
 
-AltSoftSerial bus;           // RX = D8, TX = D9 (sabit)
+AltSoftSerial bus;           // RX = D8, TX = D9 (fixed)
 
-static const uint32_t BYTE_US = 1042;     // 9600 baud'da 1 bayt
+static const uint32_t BYTE_US = 1042;     // 1 byte at 9600 baud
 
-// Super Soco telegrami: T0 T1 HEDEF KAYNAK UZUNLUK VERI... CHECKSUM 0D
+// Super Soco telegram: T0 T1 DEST SRC LEN DATA... CHECKSUM 0D
 enum { ST_T0, ST_T1, ST_DEST, ST_SRC, ST_LEN, ST_DATA, ST_CHK, ST_END };
 static uint8_t  st = ST_T0;
 static uint8_t  t0, dest, src, len, idx, chk, calc;
@@ -58,7 +58,7 @@ static void startIfHeader(uint8_t b) {
   else st = ST_T0;
 }
 
-// Gecerli bir BATARYA SORGUSU tamamlaninca true doner
+// Returns true when a valid BATTERY POLL is complete
 static bool feed(uint8_t b) {
   switch (st) {
     case ST_T0:   startIfHeader(b); return false;
@@ -96,10 +96,10 @@ static void buildAnswer(uint8_t to) {
   frame[8]  = (uint8_t)(int8_t)CURRENT_A;
   frame[9]  = (uint8_t)(CYCLES >> 8);
   frame[10] = (uint8_t)(CYCLES & 0xFF);
-  frame[11] = (uint8_t)(CYCLES >> 8);    // desarj dongusu
+  frame[11] = (uint8_t)(CYCLES >> 8);    // discharge cycles
   frame[12] = (uint8_t)(CYCLES & 0xFF);
-  frame[13] = 0;                         // hata yok
-  frame[14] = 0;                         // sarj olmuyor
+  frame[13] = 0;                         // no errors
+  frame[14] = 0;                         // not charging
   uint8_t c = frame[4];
   for (uint8_t i = 5; i < 15; i++) c ^= frame[i];
   frame[15] = c;
@@ -108,16 +108,16 @@ static void buildAnswer(uint8_t to) {
 
 void setup() {
   pinMode(PIN_DIR, OUTPUT);
-  digitalWrite(PIN_DIR, LOW);            // dinle
+  digitalWrite(PIN_DIR, LOW);            // listen
   pinMode(PIN_LED, OUTPUT);
   Serial.begin(115200);
   bus.begin(9600);
   pinMode(8, INPUT_PULLUP);
-  Serial.println(F("SocoTC_Sabit basladi: 83V %100"));
+  Serial.println(F("SocoTC_Fixed started: 83V 100%"));
 }
 
 void loop() {
-  if (st != ST_T0 && millis() - lastByteMs > 20) st = ST_T0;   // yarim kalan telegrami at
+  if (st != ST_T0 && millis() - lastByteMs > 20) st = ST_T0;   // drop a half-received telegram
 
   while (bus.available()) {
     const uint8_t b = (uint8_t)bus.read();
@@ -131,7 +131,7 @@ void loop() {
     }
   }
 
-  // cevabi gonder (sniffer'daki calisan yontemin aynisi)
+  // send the answer (same method that works in the sniffer)
   if (answerPending && (int32_t)(micros() - answerAtUs) >= 0) {
     answerPending = false;
     digitalWrite(PIN_DIR, HIGH);
@@ -148,12 +148,12 @@ void loop() {
     txActive = false;
   }
 
-  // saniyede bir durum
+  // status once per second
   if (millis() - lastPrintMs >= 1000 && !txActive && !answerPending) {
     lastPrintMs = millis();
-    Serial.print(F("hattan gelen bayt: "));  Serial.print(cntBytes);
-    Serial.print(F(" | ECU batarya sorgusu: ")); Serial.print(cntRequests);
-    Serial.print(F(" | cevap: "));           Serial.println(cntAnswers);
+    Serial.print(F("bytes from bus: "));      Serial.print(cntBytes);
+    Serial.print(F(" | ECU battery polls: ")); Serial.print(cntRequests);
+    Serial.print(F(" | answers: "));          Serial.println(cntAnswers);
   }
 
   digitalWrite(PIN_LED, (millis() - lastAnswerMs) < 50 ? LOW : HIGH);

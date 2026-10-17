@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Protokol testleri
+      - name: Protocol tests
         working-directory: tests
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror -I../JK_Soco_Final host_test.cpp -o host_test
@@ -20,14 +20,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sketch: [JK_Soco_Final, tools/SocoTC_Sniffer, tools/SocoTC_Sabit]
+        sketch: [JK_Soco_Final, tools/SocoTC_Sniffer, tools/SocoTC_Fixed]
     steps:
       - uses: actions/checkout@v7
       - uses: arduino/setup-arduino-cli@v2
-      - name: AVR core + AltSoftSerial
+      - name: Install AVR core + AltSoftSerial
         run: |
           arduino-cli core update-index
           arduino-cli core install arduino:avr
           arduino-cli lib install AltSoftSerial
-      - name: Derle (Arduino Nano)
+      - name: Compile (Arduino Nano)
         run: arduino-cli compile --fqbn arduino:avr:nano ${{ matrix.sketch }}

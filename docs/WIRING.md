@@ -1,103 +1,103 @@
-# Bağlantı
+# Wiring
 
-## Genel şema
+## Overview
 
 ```
   JK BMS                         Arduino Nano                        MAX485               Super Soco
- (4 pin UART)                                                                              RS485 hattı
+ (4-pin UART)                                                                              RS485 bus
  ┌─────────┐                ┌──────────────────────┐               ┌──────────┐
  │ GND     │────────────────│ GND              GND │───────────────│ GND      │
  │ RX      │◀──┬──[1k]──────│ D5               5V  │───────────────│ VCC      │
  │         │  [2k]          │                      │               │          │
  │         │   └─GND        │                  D8  │◀──────────────│ RO       │
  │ TX      │───────────────▶│ D4               D9  │──────────────▶│ DI       │
- │ VBAT    │  (BOŞ!)        │                  D2  │──────┬───────▶│ DE       │
+ │ VBAT    │  (NC!)         │                  D2  │──────┬───────▶│ DE       │
  └─────────┘                │                  D13 │ LED  └───────▶│ RE       │
-                            │  USB (D0/D1 boş)     │               │ A        │──── A
+                            │  USB (D0/D1 free)    │               │ A        │──── A
                             └──────────────────────┘               │ B        │──── B
                                                                    └──────────┘
 ```
 
-`[1k]` / `[2k]` bölücü isteğe bağlıdır. JK'nın RX girişine 5 V yerine ~3.3 V gitmesini sağlar.
-Testte bölücüsüz de çalıştı, ama uzun süreli kullanımda önerilir.
+The `[1k]` / `[2k]` divider is optional. It makes the JK's RX input see ~3.3 V instead of 5 V.
+It also worked without the divider in testing, but it is recommended for long-term use.
 
-## Pin tablosu
+## Pin table
 
-| Nano pini | Bağlantı | Yön | Not |
+| Nano pin | Connection | Direction | Note |
 |---|---|---|---|
-| D2 | MAX485 DE + RE | çıkış | Yüksek = gönder, düşük = dinle |
-| D4 | JK TX | giriş | Dahili pull-up açık |
-| D5 | JK RX | çıkış | Boştayken yüksek |
-| D8 | MAX485 RO | giriş | AltSoftSerial RX (sabit pin) |
-| D9 | MAX485 DI | çıkış | AltSoftSerial TX (sabit pin) |
-| D13 | Kart üzerindeki LED | çıkış | Durum göstergesi |
-| D0 / D1 | — | — | **Kullanılmaz** (USB). JK'yı buraya bağlamayın, bkz. [TROUBLESHOOTING](TROUBLESHOOTING.md#jk-d0da-hiç-cevap-vermiyor) |
-| D10 | — | — | AltSoftSerial nedeniyle PWM olarak kullanılamaz |
+| D2 | MAX485 DE + RE | output | High = transmit, low = listen |
+| D4 | JK TX | input | Internal pull-up enabled |
+| D5 | JK RX | output | High when idle |
+| D8 | MAX485 RO | input | AltSoftSerial RX (fixed pin) |
+| D9 | MAX485 DI | output | AltSoftSerial TX (fixed pin) |
+| D13 | On-board LED | output | Status indicator |
+| D0 / D1 | — | — | **Not used** (USB). Do not connect the JK here, see [TROUBLESHOOTING](TROUBLESHOOTING.md#jk-never-answers-on-d0) |
+| D10 | — | — | Cannot be used for PWM because of AltSoftSerial |
 
-## JK BMS 4 pinli UART soketi
+## JK BMS 4-pin UART socket
 
 ```
   ┌──────────────────────┐
-  │  GND   RX   TX  VBAT │      JST 1.25 mm, 4 pin
+  │  GND   RX   TX  VBAT │      JST 1.25 mm, 4-pin
   └──────────────────────┘
-     │     │    │    └── paket gerilimi (örn. 84 V). BOŞ BIRAK!
-     │     │    └─────── JK'nın çıkışı  → Nano D4
-     │     └──────────── JK'nın girişi  ← Nano D5
-     └────────────────── GND            → Nano GND
+     │     │    │    └── pack voltage (e.g. 84 V). LEAVE IT UNCONNECTED!
+     │     │    └─────── JK output  → Nano D4
+     │     └──────────── JK input   ← Nano D5
+     └────────────────── GND        → Nano GND
 ```
 
-- Bazı JK modellerinde bu sokette "RS485" ya da "GPS" yazar, ama içi **3.3 V TTL UART**'tır. Gerçek RS485 için JK'nın ayrı RS485 adaptör kartı gerekir.
-- **Pinleri ölçerken** siyah probu soketin kendi GND pinine koy. Doğru durumda VBAT = paket gerilimi, RX/TX ≈ 3.3 V çıkar. Siyah prob batarya eksisine ya da P-'ye değerse yanlış sonuç görebilirsin.
-- 3 pinli soket (varsa) CAN veya ısıtıcı içindir, RS485/UART değildir. 6 pinli soket ekran ve düğme içindir.
+- Some JK models label this socket "RS485" or "GPS", but it is a **3.3 V TTL UART** inside. Real RS485 needs JK's separate RS485 adapter board.
+- **When measuring the pins**, put the black probe on the socket's own GND pin. Correct readings: VBAT = pack voltage, RX/TX ≈ 3.3 V. If the black probe touches the battery negative or P-, you can get misleading readings.
+- The 3-pin socket (if present) is for CAN or the heater, not RS485/UART. The 6-pin socket is for the display and the button.
 
-## MAX485 modülü
+## MAX485 module
 
-| MAX485 | Bağlantı |
+| MAX485 | Connection |
 |---|---|
 | VCC | Nano 5V |
 | GND | Nano GND |
 | RO | Nano D8 |
 | DI | Nano D9 |
-| DE + RE | Birbirine köprülü → Nano D2 |
+| DE + RE | Bridged together → Nano D2 |
 | A / B | Super Soco RS485 A / B |
 
-- **A/B yönü:** Ters bağlamak bir şey bozmaz, sadece haberleşme olmaz. Sniffer çıktısında `1D D4 …` ile başlayan "çöp" satırlar görüyorsan A ve B terstir.
-- **120 Ω sonlandırma:** Modüllerin çoğunda R7 olarak bulunur. Haberleşme sorunu olursa sökmeyi dene.
+- **A/B polarity:** Swapping them does no harm; there is simply no communication. If the sniffer output shows "junk" lines starting with `1D D4 …`, A and B are swapped.
+- **120 Ω termination:** Most modules have it as R7. If you run into communication problems, try removing it.
 
-## Super Soco tarafı
+## Super Soco side
 
-Super Soco'nun dahili RS485 hattında 4 cihaz vardır: ECU (`AA`), gösterge (`BA`), motor kontrolcüsü (`DA`) ve batarya (`5A`).
-Orijinal bataryanın konnektöründeki A/B hatları kullanılır. TC Max'te koltuk altındaki 4 pinli JST SM konnektör de
-aynı hatta açılır (pin 2 = B, pin 3 = A, pin 4 = GND; kaynak: SuperSoco485Monitor).
+The Super Soco's internal RS485 bus has 4 devices: ECU (`AA`), dashboard (`BA`), motor controller (`DA`) and battery (`5A`).
+Use the A/B lines on the original battery's connector. On the TC Max, the 4-pin JST SM connector under the seat is on
+the same bus (pin 2 = B, pin 3 = A, pin 4 = GND; source: SuperSoco485Monitor).
 
-## Besleme
+## Power
 
-- Nano'yu scooter'ın **kontakla gelen 12 V** hattından besle: bir buck ile 5 V'a indirip 5V pinine ver, ya da VIN'e 7–12 V ver.
-- Masada test için USB'den beslemek yeterli.
-- JK soketindeki VBAT'ı Nano'yu beslemek için **kullanma** (paket gerilimi).
+- Power the Nano from the scooter's **switched 12 V** line: step it down to 5 V with a buck converter into the 5V pin, or feed 7–12 V into VIN.
+- On the bench, USB power is enough.
+- **Do not** use VBAT on the JK socket to power the Nano (it is the pack voltage).
 
-## Toprak ve izolasyon
+## Ground and isolation
 
-JK BMS ortak portlu bir BMS'tir ve deşarj MOSFET'leri eksi taraftadır:
-
-```
- Hücreler (−) ── B- ──[ JK MOSFET'leri ]── P- ── Scooter GND (ECU, RS485)
-                  │
-          JK UART GND
-```
-
-- JK'nın UART GND'si **B-** tarafındadır, scooter'ın RS485 referansı ise **P-** tarafındadır.
-- Nano, JK GND'si ile scooter GND'sini birleştirir. Normal çalışmada B- ile P- arasında sadece MOSFET'lerin üzerindeki küçük gerilim düşümü vardır.
-- **JK koruma için deşarj MOSFET'lerini kestiğinde** bu bağlantı MOSFET'leri Nano'nun GND hattı üzerinden köprüleyebilir. Bu durumda korumanın tam çalışmaması, Nano'nun GND hattından akım akması veya RS485 entegrelerinin zarar görmesi mümkündür.
-
-Daha güvenli yapı için JK UART hattını izole et:
+The JK BMS is a common-port BMS with its discharge MOSFETs on the negative side:
 
 ```
- Nano 5V ──▶ ADuM1201 VDD1          B0503S (5V → 3.3V izole) ──▶ ADuM1201 VDD2
- Nano GND ─▶ ADuM1201 GND1          B0503S 0V çıkış ───────────▶ ADuM1201 GND2 ──▶ JK GND
- Nano D5 ──▶ ADuM taraf-1 giriş  ══▶  ADuM taraf-2 çıkış ──▶ JK RX
- Nano D4 ◀── ADuM taraf-1 çıkış  ◀══  ADuM taraf-2 giriş ◀── JK TX
+ Cells (−) ── B- ──[ JK MOSFETs ]── P- ── Scooter GND (ECU, RS485)
+               │
+        JK UART GND
 ```
 
-ADuM1201'in her tarafında bir giriş ve bir çıkış kanalı vardır; modül etiketinden giriş→çıkış yönünü kontrol et.
-İzolatörün JK tarafı 3.3 V ile beslendiği için seviye dönüştürmeye de gerek kalmaz.
+- The JK's UART GND is on the **B-** side, while the scooter's RS485 reference is on the **P-** side.
+- The Nano connects the JK GND to the scooter GND. In normal operation the only difference between B- and P- is the small voltage drop across the MOSFETs.
+- **When the JK opens its discharge MOSFETs for protection**, this connection can bypass the MOSFETs through the Nano's GND line. The protection may then not fully work, current may flow through the Nano's GND line, or the RS485 chips may get damaged.
+
+For a safer setup, isolate the JK UART link:
+
+```
+ Nano 5V ──▶ ADuM1201 VDD1          B0503S (5V → 3.3V isolated) ──▶ ADuM1201 VDD2
+ Nano GND ─▶ ADuM1201 GND1          B0503S 0V output ───────────▶ ADuM1201 GND2 ──▶ JK GND
+ Nano D5 ──▶ ADuM side-1 input  ══▶  ADuM side-2 output ──▶ JK RX
+ Nano D4 ◀── ADuM side-1 output ◀══  ADuM side-2 input  ◀── JK TX
+```
+
+Each side of the ADuM1201 has one input and one output channel; check the input→output direction on the module's label.
+Since the JK side of the isolator runs from 3.3 V, no extra level shifting is needed.

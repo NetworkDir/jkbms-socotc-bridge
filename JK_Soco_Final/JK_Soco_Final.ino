@@ -1,31 +1,32 @@
 /*
   ============================================================================
    JK_Soco_Final - JK BMS (UART) -> Super Soco TC (RS485)
-   Kart: Arduino Nano + MAX485.  D0/D1 KULLANILMAZ (USB serbest).
+   Board: Arduino Nano + MAX485.  D0/D1 are NOT used (USB stays free).
   ============================================================================
 
-   - ECU'nun batarya sorgusuna (C5 5C 5A AA ...) JK'dan okunan degerlerle cevap verir.
-   - Ilk cevaptan hemen sonra, sonra her JK_EVERY_N_CYCLES cevapta bir, ECU ~91 ms
-     susarken JK'ya UART'tan "tum veriyi oku" istegi atar ve cevabi okur.
-     JK okunurken kesmeler kapatilir; D4/D5 Timer1 sayaciyla bit bit, saat
-     hassasiyetinde surulur (115200 icin SoftwareSerial yeterince guvenilir degil).
-   - JK verisi hic gelmediyse ya da 10 sn gelmezse 83 V / %100 gonderir.
+   - Answers the ECU's battery poll (C5 5C 5A AA ...) with values read from the JK.
+   - Right after the first answer, then every JK_EVERY_N_CYCLES answers, while the
+     ECU is silent for ~91 ms, it sends a "read all data" request to the JK over
+     UART and reads the reply. Interrupts are disabled during the JK read; D4/D5
+     are bit-banged with clock accuracy using the Timer1 counter (SoftwareSerial
+     is not reliable enough at 115200).
+   - If no JK data has been received yet, or none for 10 s, it sends 83 V / 100 %.
 
-   Baglanti:
-     MAX485 (degismedi):
+   Wiring:
+     MAX485:
        RO      -> D8
        DI      <- D9
-       DE + RE <- D2   (kopru)
+       DE + RE <- D2   (bridged)
        VCC/GND -> 5V / GND
        A / B   -> Soco RS485 A / B
-     JK 4 pinli soket (GND - RX - TX - VBAT):
+     JK 4-pin socket (GND - RX - TX - VBAT):
        JK TX   -> D4
        JK RX   <- D5
        JK GND  -> Nano GND
-       JK VBAT -> BOS
+       JK VBAT -> NOT CONNECTED
 
-   Kutuphane: AltSoftSerial (Paul Stoffregen)
-   Seri Monitor (115200): her JK okumasinda bir durum satiri.
+   Library: AltSoftSerial (Paul Stoffregen)
+   Serial Monitor (115200): one status line per JK read.
 */
 
 #include <AltSoftSerial.h>
@@ -34,9 +35,9 @@
 #include "soco_tc.h"
 #include "convert.h"
 
-AltSoftSerial bus;            // MAX485: RX = D8, TX = D9 (sabit)
+AltSoftSerial bus;            // MAX485: RX = D8, TX = D9 (fixed)
 
-// JK UART pinleri (PORTD bitleri): D4 = PD4 (JK TX'ten gelir), D5 = PD5 (JK RX'e gider)
+// JK UART pins (PORTD bits): D4 = PD4 (from JK TX), D5 = PD5 (to JK RX)
 #define JK_RX_BIT  4
 #define JK_TX_BIT  5
 
@@ -48,7 +49,7 @@ static uint8_t              jkRaw[jk::RX_BUF_SIZE];
 
 static bool     haveJk         = false;
 static uint32_t lastJkOkMs     = 0;
-static uint8_t  cycleCount     = JK_EVERY_N_CYCLES - 1;   // ilk cevaptan sonra hemen JK oku
+static uint8_t  cycleCount     = JK_EVERY_N_CYCLES - 1;   // read the JK right after the first answer
 static uint32_t lastSocoByteMs = 0;
 
 static bool     respPending    = false;
@@ -59,25 +60,25 @@ static uint32_t lastAnswerMs   = 0;
 static uint32_t answerCount = 0, jkOkCount = 0, jkFailCount = 0;
 
 // ---------------------------------------------------------------------------
-//  JK UART (115200) - Timer1 sayaci ile, kesmeler KAPALIYKEN cagrilmali.
-//  AltSoftSerial Timer1'i 9600 icin bolucusuz (16 MHz) calistirir; biz sadece okuyoruz.
+//  JK UART (115200) on the Timer1 counter. Must be called with interrupts DISABLED.
+//  AltSoftSerial runs Timer1 without a prescaler (16 MHz) at 9600; we only read it.
 // ---------------------------------------------------------------------------
-static const uint16_t BIT_CY = (F_CPU + JK_BAUD / 2) / JK_BAUD;   // 139 saat = 1 bit
+static const uint16_t BIT_CY = (F_CPU + JK_BAUD / 2) / JK_BAUD;   // 139 clocks = 1 bit
 
 static void jkSendByte(uint8_t b) {
   uint16_t t = TCNT1;
-  PORTD &= ~_BV(JK_TX_BIT);                         // start biti
+  PORTD &= ~_BV(JK_TX_BIT);                         // start bit
   t += BIT_CY; while ((int16_t)(TCNT1 - t) < 0) {}
   for (uint8_t i = 0; i < 8; i++) {
     if (b & 1) PORTD |= _BV(JK_TX_BIT); else PORTD &= ~_BV(JK_TX_BIT);
     b >>= 1;
     t += BIT_CY; while ((int16_t)(TCNT1 - t) < 0) {}
   }
-  PORTD |= _BV(JK_TX_BIT);                          // stop biti
+  PORTD |= _BV(JK_TX_BIT);                          // stop bit
   t += BIT_CY; while ((int16_t)(TCNT1 - t) < 0) {}
 }
 
-// JK cevabini ham olarak topla. Cerceve uzunlugu dolunca ya da sure bitince doner.
+// Collect the raw JK reply. Returns once the frame length is reached or on timeout.
 static uint16_t jkReceive(uint32_t timeoutCy, uint32_t &firstCy, uint32_t &doneCy) {
   uint16_t n = 0, expected = 0;
   uint16_t last = TCNT1;
@@ -88,9 +89,9 @@ static uint16_t jkReceive(uint32_t timeoutCy, uint32_t &firstCy, uint32_t &doneC
     const uint16_t now = TCNT1;
     elapsed += (uint16_t)(now - last);
     last = now;
-    if (PIND & _BV(JK_RX_BIT)) continue;            // hat bos (yuksek)
+    if (PIND & _BV(JK_RX_BIT)) continue;            // line idle (high)
 
-    // start biti: her bitin ortasindan ornek al
+    // start bit: sample every bit in its middle
     uint16_t t = now + BIT_CY + BIT_CY / 2;
     uint8_t b = 0;
     for (uint8_t i = 0; i < 8; i++) {
@@ -99,9 +100,9 @@ static uint16_t jkReceive(uint32_t timeoutCy, uint32_t &firstCy, uint32_t &doneC
       if (PIND & _BV(JK_RX_BIT)) b |= 0x80;
       t += BIT_CY;
     }
-    while ((int16_t)(TCNT1 - t) < 0) {}             // stop bitinin ortasi
+    while ((int16_t)(TCNT1 - t) < 0) {}             // middle of the stop bit
 
-    if (n == 0 && b != 0x4E) { /* baslik degil, at */ }
+    if (n == 0 && b != 0x4E) { /* not a header, drop it */ }
     else if (n == 1 && b != 0x57) { n = 0; }
     else {
       if (n == 0) firstCy = elapsed;
@@ -137,7 +138,7 @@ static soco::BatteryStatus currentStatus() {
 }
 
 // ---------------------------------------------------------------------------
-//  JK okuma. Batarya cevabindan hemen sonra cagrilir (ECU ~91 ms susuyor).
+//  JK read. Called right after a battery answer (the ECU is silent for ~91 ms).
 // ---------------------------------------------------------------------------
 static void readJk() {
   uint8_t req[jk::READ_ALL_LEN];
@@ -146,10 +147,10 @@ static void readJk() {
   uint32_t firstCy, doneCy;
 
   const uint8_t sreg = SREG;
-  cli();                                            // pencere boyunca kesme yok
+  cli();                                            // no interrupts during the window
   for (uint8_t i = 0; i < reqLen; i++) jkSendByte(req[i]);
   const uint16_t rxBytes = jkReceive(timeoutCy, firstCy, doneCy);
-  SREG = sreg;                                      // kesmeler geri
+  SREG = sreg;                                      // interrupts back on
 
   bool ok = false, badFrame = false;
   jkRx.reset();
@@ -180,17 +181,17 @@ static void readJk() {
     Serial.print(jkData.voltage_cV / 100); Serial.print('.');
     const uint8_t r = jkData.voltage_cV % 100; if (r < 10) Serial.print('0'); Serial.print(r);
     Serial.print(F("V  ")); Serial.print(jkData.current_cA / 100);
-    Serial.print(F("A  %")); Serial.print(jkData.soc);
+    Serial.print(F("A  ")); Serial.print(jkData.soc); Serial.print('%');
     Serial.print(F("  ")); Serial.print(conv::pickTemperature(jkData)); Serial.print('C');
-    Serial.print(F("  ")); Serial.print(jkData.cellCount); Serial.print(F(" hucre"));
-    Serial.print(F(" | sure ")); Serial.print(doneCy / cyPerMs); Serial.print(F(" ms"));
+    Serial.print(F("  ")); Serial.print(jkData.cellCount); Serial.print(F(" cells"));
+    Serial.print(F(" | took ")); Serial.print(doneCy / cyPerMs); Serial.print(F(" ms"));
   } else {
-    Serial.print(F("JK YOK (83V %100 gonderiliyor)  gelen ")); Serial.print(rxBytes); Serial.print(F(" bayt"));
-    if (rxBytes) { Serial.print(F(", ilk bayt ")); Serial.print(firstCy / cyPerMs); Serial.print(F(" ms")); }
-    if (badFrame) Serial.print(F(", bozuk cerceve"));
+    Serial.print(F("NO JK (sending 83V 100%)  got ")); Serial.print(rxBytes); Serial.print(F(" bytes"));
+    if (rxBytes) { Serial.print(F(", first byte after ")); Serial.print(firstCy / cyPerMs); Serial.print(F(" ms")); }
+    if (badFrame) Serial.print(F(", bad frame"));
   }
-  Serial.print(F(" | ECU cevap ")); Serial.print(answerCount);
-  Serial.print(F(", jk ok/yok ")); Serial.print(jkOkCount);
+  Serial.print(F(" | ECU answers ")); Serial.print(answerCount);
+  Serial.print(F(", jk ok/fail ")); Serial.print(jkOkCount);
   Serial.print('/'); Serial.println(jkFailCount);
 #endif
 }
@@ -200,12 +201,12 @@ static void answerBattery() {
   uint8_t buf[soco::BATTERY_FRAME_LEN];
   const uint8_t n = soco::buildBatteryResponse(currentStatus(), respDest, buf);
 
-  digitalWrite(PIN_RS485_DIR, HIGH);      // MAX485 verici acik
+  digitalWrite(PIN_RS485_DIR, HIGH);      // MAX485 transmitter on
   delayMicroseconds(20);
   bus.write(buf, n);
-  bus.flushOutput();                      // son stop biti bitene kadar bekler
+  bus.flushOutput();                      // waits until the last stop bit is out
   delayMicroseconds(50);
-  digitalWrite(PIN_RS485_DIR, LOW);       // tekrar dinle
+  digitalWrite(PIN_RS485_DIR, LOW);       // back to listening
 
   lastAnswerMs = millis();
   answerCount++;
@@ -219,9 +220,9 @@ static void answerBattery() {
 }
 
 // ---------------------------------------------------------------------------
-//  LED: yavas yanip sonme = ECU sorgusu yok
-//       hizli yanip sonme = ECU tamam, JK verisi yok (%100 gonderiliyor)
-//       surekli yanik + kisa sonme = ECU ve JK tamam
+//  LED: slow blink              = no ECU polls
+//       fast blink              = ECU ok, no JK data (sending 100 %)
+//       steady on + short blink = ECU and JK ok
 // ---------------------------------------------------------------------------
 static void serviceLed(uint32_t nowMs) {
   bool on;
@@ -234,19 +235,19 @@ static void serviceLed(uint32_t nowMs) {
 // ---------------------------------------------------------------------------
 void setup() {
   pinMode(PIN_RS485_DIR, OUTPUT);
-  digitalWrite(PIN_RS485_DIR, LOW);       // dinle
+  digitalWrite(PIN_RS485_DIR, LOW);       // listen
   pinMode(PIN_LED, OUTPUT);
 
   pinMode(4, INPUT_PULLUP);               // JK TX -> D4
   pinMode(5, OUTPUT);                     // D5 -> JK RX
-  digitalWrite(5, HIGH);                  // UART bos seviyesi
+  digitalWrite(5, HIGH);                  // UART idle level
 
   Serial.begin(115200);
-  bus.begin(SOCO_BAUD);                   // Timer1'i 16 MHz serbest sayaca alir
+  bus.begin(SOCO_BAUD);                   // puts Timer1 into 16 MHz free-running mode
   pinMode(8, INPUT_PULLUP);
 
 #if DEBUG_SERIAL
-  Serial.println(F("JK_Soco_Final basladi. MAX485 D8/D9, JK D4/D5. JK yoksa 83V %100."));
+  Serial.println(F("JK_Soco_Final started. MAX485 D8/D9, JK D4/D5. Without JK: 83V 100%."));
 #endif
 }
 

@@ -1,11 +1,11 @@
-# Derleme çıktıları
+# Build output
 build/
 *.o
 *.elf
 *.hex
 *.bin
 
-# PC testi
+# Host test
 tests/host_test
 tests/host_test.exe
 
@@ -13,7 +13,7 @@ tests/host_test.exe
 __pycache__/
 *.pyc
 
-# Editör / işletim sistemi
+# Editor / OS
 .vscode/
 .idea/
 .DS_Store

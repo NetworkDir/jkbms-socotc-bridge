@@ -1,4 +1,4 @@
-// PC uzerinde protokol mantigini test eder (Arduino gerekmez).
+// Tests the protocol logic on a PC (no Arduino needed).
 //   g++ -std=c++11 -Wall -Wextra -I../JK_Soco_Final host_test.cpp -o host_test && ./host_test
 #include <cstdio>
 #include <cstring>
@@ -6,7 +6,7 @@
 #include "convert.h"
 
 static int fails = 0;
-#define CHECK(cond) do { if (!(cond)) { printf("HATA  satir %d: %s\n", __LINE__, #cond); fails++; } } while (0)
+#define CHECK(cond) do { if (!(cond)) { printf("FAIL  line %d: %s\n", __LINE__, #cond); fails++; } } while (0)
 
 static std::vector<uint8_t> hex(const char *s) {
   std::vector<uint8_t> v;
@@ -17,7 +17,7 @@ static std::vector<uint8_t> hex(const char *s) {
 }
 
 int main() {
-  // 1) JK istek cercevesi dokumandaki ornekle ayni mi (kaynak 0x03)
+  // 1) JK request frame matches the documented example (source 0x03)
   {
     uint8_t req[21];
     jk::buildReadAllRequest(req, 0x03);
@@ -25,7 +25,7 @@ int main() {
     CHECK(memcmp(req, ref.data(), 21) == 0);
   }
 
-  // 2) Dokumandaki gercek JK cevabi (14 hucre)
+  // 2) Real JK response from the documentation (14 cells)
   auto frame = hex(
       "4E 57 01 1B 00 00 00 00 06 00 01 "
       "79 2A 01 0E ED 02 0E FA 03 0E F7 04 0E EC 05 0E F8 06 0E FA 07 0E F1 08 0E F8 "
@@ -42,10 +42,10 @@ int main() {
       "C0 01 00 00 00 00 68 00 00 54 D1");
   CHECK(frame.size() == 0x011B + 2);
 
-  static jk::Receiver rx;   // 400 bayt tampon
+  static jk::Receiver rx;   // 400-byte buffer
   jk::Data d;
   {
-    // onunde cop veri + yarim baslik olsa da bulmali
+    // must still find it after junk + a partial header
     auto junk = hex("00 4E 13 4E 4E 57");
     int ok = 0;
     for (uint8_t b : junk) rx.feed(b);
@@ -54,7 +54,7 @@ int main() {
     CHECK(ok == 1);
     CHECK(jk::decode(rx.frame(), rx.frameLen(), d, 1));
     CHECK(d.voltage_cV == 5359);
-    CHECK(d.current_cA == 208);          // +2.08 A sarj
+    CHECK(d.current_cA == 208);          // +2.08 A charging
     CHECK(d.soc == 15);
     CHECK(d.tempMos == 29 && d.temp1 == 30 && d.temp2 == 28);
     CHECK(d.cycles == 4);
@@ -63,7 +63,7 @@ int main() {
     CHECK(d.protocol == 1);
   }
   {
-    // bozuk checksum reddedilmeli
+    // a bad checksum must be rejected
     auto bad = frame;
     bad[20] ^= 0x01;
     rx.reset();
@@ -76,16 +76,16 @@ int main() {
     CHECK(okc == 0 && badc == 1);
   }
 
-  // 3) Sicaklik / akim cozumu
+  // 3) Temperature / current decoding
   CHECK(jk::decodeTemp(25) == 25);
   CHECK(jk::decodeTemp(101) == -1);
   CHECK(jk::decodeTemp(140) == -40);
-  CHECK(jk::decodeCurrent(0x07D0, 1) == -2000);   // 20 A desarj
-  CHECK(jk::decodeCurrent(0x87D0, 1) == 2000);    // 20 A sarj
-  CHECK(jk::decodeCurrent(11000, 0) == -1000);    // eski format -10 A
-  CHECK(jk::decodeCurrent(9500, 0) == 500);       // eski format +5 A
+  CHECK(jk::decodeCurrent(0x07D0, 1) == -2000);   // 20 A discharge
+  CHECK(jk::decodeCurrent(0x87D0, 1) == 2000);    // 20 A charge
+  CHECK(jk::decodeCurrent(11000, 0) == -1000);    // old format -10 A
+  CHECK(jk::decodeCurrent(9500, 0) == 500);       // old format +5 A
 
-  // 4) JK -> Soco donusumu
+  // 4) JK -> Soco conversion
   {
     soco::BatteryStatus s = conv::toSoco(d, false);
     CHECK(s.voltage == 54);   // 53.59 -> 54
@@ -96,7 +96,7 @@ int main() {
     CHECK(s.error == 0 && s.activity == 0);
 
     jk::Data e = d;
-    e.current_cA = -25060;    // -250.6 A -> -128'e sinirlanmali
+    e.current_cA = -25060;    // -250.6 A -> must clamp to -128
     e.alarms = jk::ALM_DISCHARGE_OC | jk::ALM_CELL_OV;
     s = conv::toSoco(e, true);
     CHECK(s.current == -128);
@@ -108,7 +108,7 @@ int main() {
     CHECK(conv::toSoco(e, false).current == -4);
   }
 
-  // 5) Soco cevabi: orijinal BMS'ten yakalanan ornekle birebir
+  // 5) Soco answer: byte-exact match with a capture from the original BMS
   {
     soco::BatteryStatus s = {0x42, 0x4D, 0x1B, 0, 5, 3, 0, 0};
     uint8_t out[17];
@@ -117,15 +117,15 @@ int main() {
     CHECK(memcmp(out, ref.data(), 17) == 0);
   }
 
-  // 6) Soco ayristirici: gercek bus trafigi, araya cop ve 0x0D iceren cevap
+  // 6) Soco parser: real bus traffic with junk and an answer containing 0x0D
   {
     auto bus = hex(
-        "0D FF C5 "                                           // cop + yarim baslik
-        "C5 5C DA AA 02 00 00 02 0D "                         // motor surucu sorgusu
-        "B6 6B AA DA 0A 01 00 00 00 00 17 00 00 02 01 1F 0D " // motor surucu cevabi
-        "B6 6B AA 5A 0A 42 4D 0D 00 00 05 00 03 00 00 0E 0D " // batarya cevabi (13 C!)
-        "C5 5C 5A AA 01 97 96 0D "                            // BATARYA SORGUSU
-        "C5 5C 5A AA 01 97 95 0D");                           // bozuk checksum
+        "0D FF C5 "                                           // junk + partial header
+        "C5 5C DA AA 02 00 00 02 0D "                         // motor controller poll
+        "B6 6B AA DA 0A 01 00 00 00 00 17 00 00 02 01 1F 0D " // motor controller answer
+        "B6 6B AA 5A 0A 42 4D 0D 00 00 05 00 03 00 00 0E 0D " // battery answer (13 C!)
+        "C5 5C 5A AA 01 97 96 0D "                            // BATTERY POLL
+        "C5 5C 5A AA 01 97 95 0D");                           // bad checksum
     soco::Parser p;
     int telegrams = 0, batteryReq = 0;
     for (uint8_t b : bus) {
@@ -141,17 +141,17 @@ int main() {
     CHECK(batteryReq == 1);
   }
 
-  // 7) Sarj algilama
+  // 7) Charge detection
   {
     conv::ChargeDetector cd;
     CHECK(!cd.update(500, 0));
     CHECK(!cd.update(500, CHARGE_DETECT_MS - 1));
     CHECK(cd.update(500, CHARGE_DETECT_MS));
-    CHECK(cd.update(50, CHARGE_DETECT_MS + 10));    // histerezis bandi: devam
+    CHECK(cd.update(50, CHARGE_DETECT_MS + 10));    // hysteresis band: stays on
     CHECK(!cd.update(0, CHARGE_DETECT_MS + 20));
-    CHECK(!cd.update(500, CHARGE_DETECT_MS + 30));  // tekrar beklemeli
+    CHECK(!cd.update(500, CHARGE_DETECT_MS + 30));  // must wait again
   }
 
-  printf(fails ? "\n%d test HATALI\n" : "Tum testler gecti\n", fails);
+  printf(fails ? "\n%d check(s) FAILED\n" : "All tests passed\n", fails);
   return fails ? 1 : 0;
 }

@@ -1,0 +1,20 @@
+# Derleme çıktıları
+build/
+*.o
+*.elf
+*.hex
+*.bin
+
+# PC testi
+tests/host_test
+tests/host_test.exe
+
+# Python
+__pycache__/
+*.pyc
+
+# Editör / işletim sistemi
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

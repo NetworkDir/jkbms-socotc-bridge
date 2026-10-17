@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Protokol testleri
+        working-directory: tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror -I../JK_Soco_Final host_test.cpp -o host_test
+          ./host_test
+
+  arduino:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sketch: [JK_Soco_Final, tools/SocoTC_Sniffer, tools/SocoTC_Sabit]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: arduino/setup-arduino-cli@v2
+      - name: AVR core + AltSoftSerial
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+          arduino-cli lib install AltSoftSerial
+      - name: Derle (Arduino Nano)
+        run: arduino-cli compile --fqbn arduino:avr:nano ${{ matrix.sketch }}

@@ -175,7 +175,7 @@ NO JK (sending 83V 100%)  got 0 bytes | ECU answers 7, jk ok/fail 0/3
 |---|---|
 | [`tools/SocoTC_Sniffer`](tools/SocoTC_Sniffer/SocoTC_Sniffer.ino) | Listens to the RS485 bus and prints every telegram with a timestamp and the gap before it, plus a summary every 5 s. Can optionally answer the battery poll with 72 V / 80 %. Use it to find the A/B polarity and to measure timing. Same wiring as the main project (D8/D9/D2). |
 | [`tools/SocoTC_Fixed`](tools/SocoTC_Fixed/SocoTC_Fixed.ino) | Simplest emulator, no JK: always 83 V / 100 %. Same wiring (D8/D9/D2). |
-| [`tools/SocoTC_Voltage`](tools/SocoTC_Voltage/SocoTC_Voltage.ino) | Emulator without any BMS link: measures the pack voltage on **A0** through a 270k / 10k divider and sends that voltage plus an SOC estimated from it (Li-ion table, `CELLS_S` = 20). Falls back to 83 V / 100 % if the reading is invalid. Same RS485 wiring (D8/D9/D2). |
+| [`tools/SocoTC_Voltage`](tools/SocoTC_Voltage/SocoTC_Voltage.ino) | Emulator without any BMS link: measures the pack voltage on **A0** through a 270k / 10k divider and sends that voltage plus an SOC estimated from it (Li-ion curve between `CELL_EMPTY_MV` and `CELL_FULL_MV`, `CELLS_S` = 20). Falls back to 83 V / 100 % if the reading is invalid. Same RS485 wiring (D8/D9/D2). |
 | [`tools/soco_master_sim.py`](tools/soco_master_sim.py) | Emulates the ECU from a PC through a USB-RS485 adapter and decodes the answer (`pip install pyserial`). For bench testing without the bike. |
 | [`tests/host_test.cpp`](tests/host_test.cpp) | PC tests for the protocol code: a real JK response, a byte-exact comparison with the original Soco BMS answer, the parser. `cd tests && g++ -std=c++11 -I../JK_Soco_Final host_test.cpp -o host_test && ./host_test` |
 

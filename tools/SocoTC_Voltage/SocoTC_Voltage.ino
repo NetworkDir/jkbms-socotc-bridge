@@ -41,6 +41,8 @@
 #define VOLTAGE_CAL       1.000    // fine trim against a multimeter
 
 #define CELLS_S           20       // cells in series (20S Li-ion = 84 V full)
+#define CELL_FULL_MV      4030     // cell voltage reported as 100 % (4030 = JK showing 96 % at 79.9 V)
+#define CELL_EMPTY_MV     3000     // cell voltage reported as 0 %
 #define MIN_VALID_V       30.0     // readings below this are treated as invalid
 #define FALLBACK_V        83       // sent while the reading is invalid
 #define FALLBACK_SOC      100
@@ -54,7 +56,8 @@
 #define RESPONSE_DELAY_US 1000UL   // delay between the poll and the answer
 // ------------------------------------------------------------
 
-// Li-ion (NMC) resting voltage per cell -> SOC. Replace it for LiFePO4.
+// Li-ion (NMC) curve shape over 3.0..4.2 V per cell, stretched onto
+// CELL_EMPTY_MV..CELL_FULL_MV. Replace it for LiFePO4.
 static const uint16_t SOC_MV[]  = { 3000, 3400, 3550, 3650, 3700, 3740, 3790, 3850, 3920, 4000, 4100, 4200 };
 static const uint8_t  SOC_PCT[] = {    0,    5,   10,   20,   30,   40,   50,   60,   70,   80,   90,  100 };
 
@@ -116,13 +119,16 @@ static void sampleVoltage() {
 }
 
 static uint8_t socFromVoltage(float packV) {
-  const float cellMv = packV * 1000.0f / CELLS_S;
   const uint8_t n = sizeof(SOC_MV) / sizeof(SOC_MV[0]);
-  if (cellMv <= SOC_MV[0])     return SOC_PCT[0];
-  if (cellMv >= SOC_MV[n - 1]) return SOC_PCT[n - 1];
+  const float cellMv = packV * 1000.0f / CELLS_S;
+  // map CELL_EMPTY_MV..CELL_FULL_MV onto the table's range
+  const float mv = SOC_MV[0] + (cellMv - CELL_EMPTY_MV) *
+                   ((float)(SOC_MV[n - 1] - SOC_MV[0]) / (CELL_FULL_MV - CELL_EMPTY_MV));
+  if (mv <= SOC_MV[0])     return SOC_PCT[0];
+  if (mv >= SOC_MV[n - 1]) return SOC_PCT[n - 1];
   for (uint8_t i = 1; i < n; i++) {
-    if (cellMv < SOC_MV[i]) {
-      const float f = (cellMv - SOC_MV[i - 1]) / (float)(SOC_MV[i] - SOC_MV[i - 1]);
+    if (mv < SOC_MV[i]) {
+      const float f = (mv - SOC_MV[i - 1]) / (float)(SOC_MV[i] - SOC_MV[i - 1]);
       return (uint8_t)(SOC_PCT[i - 1] + f * (SOC_PCT[i] - SOC_PCT[i - 1]) + 0.5f);
     }
   }

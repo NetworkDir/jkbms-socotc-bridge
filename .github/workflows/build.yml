@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sketch: [JK_Soco_Final, tools/SocoTC_Sniffer, tools/SocoTC_Fixed]
+        sketch: [JK_Soco_Final, tools/SocoTC_Sniffer, tools/SocoTC_Fixed, tools/SocoTC_Voltage]
     steps:
       - uses: actions/checkout@v7
       - uses: arduino/setup-arduino-cli@v2

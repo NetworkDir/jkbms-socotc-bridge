@@ -21,11 +21,15 @@
     Pack − ────────────┴──── Nano GND  (scooter GND)
 
     Divider ratio (270k + 10k) / 10k = 28  ->  84 V on the pack = 3.0 V on A0.
-    With a 5 V reference the maximum is ~140 V.
+    With a 5 V supply the maximum is ~140 V.
 
-  Calibration: measure the Nano's 5V pin (powered the way it will be on the bike)
-  and put it in VREF_V. Then compare "Pack" in the Serial Monitor with a
-  multimeter on the pack and fine-tune VOLTAGE_CAL.
+  The ADC reference is the Nano's own 5V rail, which differs between USB and
+  the bike supply. The sketch measures that rail against the internal 1.1 V
+  bandgap, so the reading stays the same whichever way the Nano is powered.
+
+  Calibration (once): compare "Pack" in the Serial Monitor with a multimeter or
+  the BMS app and set VOLTAGE_CAL = real voltage / shown voltage. This also
+  absorbs the bandgap's chip-to-chip tolerance (1.0..1.2 V).
 
   Required library: AltSoftSerial (Paul Stoffregen)
   Serial Monitor (115200): one status line per second.
@@ -37,8 +41,8 @@
 #define PIN_VSENSE        A0       // divider output
 #define R_TOP_K           270.0    // kOhm, pack + side
 #define R_BOTTOM_K        10.0     // kOhm, GND side
-#define VREF_V            5.00     // measured voltage on the Nano 5V pin
-#define VOLTAGE_CAL       1.000    // fine trim against a multimeter
+#define BANDGAP_V         1.10     // internal reference, nominal (VOLTAGE_CAL corrects it)
+#define VOLTAGE_CAL       1.000    // real voltage / shown voltage
 
 #define CELLS_S           20       // cells in series (20S Li-ion = 84 V full)
 #define CELL_FULL_MV      4030     // cell voltage reported as 100 % (4030 = JK showing 96 % at 79.9 V)
@@ -85,6 +89,7 @@ static uint16_t lastAdc = 0;
 static uint32_t lastSampleMs = 0;
 static bool     haveVolt = false;
 static float    voltFast = 0, voltSlow = 0;
+static float    vcc = 0;      // Nano supply = ADC reference, measured
 
 static uint32_t cntRequests = 0, cntAnswers = 0;
 static uint32_t lastPrintMs = 0;
@@ -92,6 +97,24 @@ static uint32_t lastPrintMs = 0;
 // ---------------------------------------------------------------------------
 //  Voltage
 // ---------------------------------------------------------------------------
+
+// Measure the Nano's supply (the ADC reference) against the 1.1 V bandgap.
+// Takes ~3 ms, so it runs right after our answer while the bus is quiet.
+static void measureVcc() {
+  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);   // ref = AVcc, input = bandgap
+  delay(2);                                                 // let the bandgap input settle
+  uint16_t sum = 0;
+  for (uint8_t i = 0; i < 5; i++) {
+    ADCSRA |= _BV(ADSC);
+    while (ADCSRA & _BV(ADSC)) {}
+    if (i) sum += ADC;                                      // first conversion is discarded
+  }
+  if (sum == 0) return;
+  const float v = BANDGAP_V * 1023.0f * 4 / sum;
+  vcc = (vcc == 0) ? v : vcc + (v - vcc) * 0.25f;
+  // the next analogRead() selects A0 and the AVcc reference again
+}
+
 static void sampleVoltage() {
   const uint32_t now = millis();
   if (now - lastSampleMs < SAMPLE_EVERY_MS) return;
@@ -105,7 +128,7 @@ static void sampleVoltage() {
   adcN = 0;
   lastAdc = (uint16_t)(adc + 0.5f);
 
-  const float v = adc * (VREF_V / 1023.0f) * DIVIDER * VOLTAGE_CAL;
+  const float v = adc * (vcc / 1023.0f) * DIVIDER * VOLTAGE_CAL;
   if (v < MIN_VALID_V) { haveVolt = false; return; }   // divider not connected / bad reading
 
   const float dt = SAMPLE_EVERY_MS * SAMPLES_PER_AVG;
@@ -213,6 +236,7 @@ static void sendAnswer() {
   digitalWrite(PIN_DIR, LOW);            // back to listening
   lastAnswerMs = millis();
   cntAnswers++;
+  measureVcc();                          // the ECU stays silent for ~91 ms now
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +252,7 @@ static void printStatus() {
   } else {
     Serial.print(F("No valid voltage (ADC ")); Serial.print(lastAdc); Serial.print(')');
   }
+  Serial.print(F("  Vcc "));       Serial.print(vcc, 2);
   Serial.print(F(" -> sending ")); Serial.print(volts);
   Serial.print(F("V ")); Serial.print(soc); Serial.print('%');
   Serial.print(F(" | ECU polls ")); Serial.print(cntRequests);
@@ -254,6 +279,7 @@ void setup() {
   Serial.begin(115200);
   bus.begin(9600);
   pinMode(8, INPUT_PULLUP);
+  measureVcc();
   Serial.println(F("SocoTC_Voltage started: pack voltage on A0 (270k/10k divider)"));
 }
 
